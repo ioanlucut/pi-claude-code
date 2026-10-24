@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
 import type { AssistantMessage, Message, Tool } from "@earendil-works/pi-ai";
 import {
@@ -67,6 +68,55 @@ test("prepares replay frames and groups tool results", () => {
   assert.equal((frames[1]?.message.content[2] as { name: string }).name, `${TOOL_PREFIX}read`);
   assert.equal(frames[2]?.message.content.length, 2);
   assert.equal(frames[2]?.shouldQuery, undefined);
+});
+
+test("normalizes foreign tool IDs consistently without changing transcript history", () => {
+  const ids = [
+    "call_123|fc_456",
+    "call_123_fc_456",
+    "call_123/fc_456",
+    `${"a".repeat(64)}first`,
+    `${"a".repeat(64)}second`,
+    "toolu_native-123",
+    createHash("sha256").update("call_123|fc_456").digest("hex"),
+  ];
+  const assistant: AssistantMessage = {
+    role: "assistant",
+    api: "openai-codex-responses",
+    provider: "openai-codex",
+    model: "codex",
+    content: ids.map((id) => ({ type: "toolCall", id, name: "read", arguments: { path: "a" } })),
+    usage,
+    stopReason: "toolUse",
+    timestamp: 1,
+  };
+  const messages: Message[] = [
+    { role: "user", content: "inspect", timestamp: 0 },
+    assistant,
+    ...ids.map((id): Message => ({
+      role: "toolResult",
+      toolCallId: id,
+      toolName: "read",
+      content: [{ type: "text", text: "result" }],
+      isError: false,
+      timestamp: 2,
+    })),
+  ];
+  const original = structuredClone(messages);
+  const frames = prepareFrames(messages);
+  const calls = frames[1]!.message.content as Array<{ id: string }>;
+  const results = frames[2]!.message.content as Array<{ tool_use_id: string }>;
+
+  for (const [index, call] of calls.entries()) {
+    assert.match(call.id, /^[a-zA-Z0-9_-]{1,64}$/);
+    assert.equal(results[index]!.tool_use_id, call.id);
+  }
+  assert.equal(new Set(calls.map((call) => call.id)).size, ids.length);
+  assert.equal(calls[1]!.id, ids[1]);
+  assert.equal(calls[5]!.id, ids[5]);
+  assert.equal(calls[6]!.id, ids[6]);
+  assert.deepEqual(prepareFrames(messages), frames);
+  assert.deepEqual(messages, original);
 });
 
 test("replays native signed blocks only while the visible projection is unchanged", () => {

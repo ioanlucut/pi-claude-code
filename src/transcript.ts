@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   getDeclaredTools,
   getInitialSystemMessage,
@@ -133,6 +134,26 @@ function toolResultContent(message: ToolResultMessage): string | unknown[] {
   );
 }
 
+function prepareToolCallIds(messages: Message[]): Map<string, string> {
+  const ids = messages.flatMap((message) =>
+    message.role === "assistant"
+      ? message.content.filter((block) => block.type === "toolCall").map((block) => block.id)
+      : message.role === "toolResult"
+        ? [message.toolCallId]
+        : [],
+  );
+  const usedIds = new Set(ids);
+  const replacements = new Map<string, string>();
+  for (const id of ids) {
+    if (/^[a-zA-Z0-9_-]{1,64}$/.test(id) || replacements.has(id)) continue;
+    let replacement = createHash("sha256").update(id).digest("hex");
+    while (usedIds.has(replacement)) replacement = createHash("sha256").update(replacement).digest("hex");
+    usedIds.add(replacement);
+    replacements.set(id, replacement);
+  }
+  return replacements;
+}
+
 function canonicalAssistantContent(message: AssistantMessage): NativeContentBlock[] {
   const blocks: NativeContentBlock[] = [];
   for (const block of message.content) {
@@ -180,6 +201,7 @@ function assistantContent(message: AssistantMessage): NativeContentBlock[] {
 
 export function prepareFrames(messages: Message[]): NativeFrame[] {
   const frames: NativeFrame[] = [];
+  const toolCallIds = prepareToolCallIds(messages);
 
   for (const message of messages) {
     if (message.role === "system") continue;
@@ -192,13 +214,15 @@ export function prepareFrames(messages: Message[]): NativeFrame[] {
       blocks = userContent(message.content);
     } else if (message.role === "assistant") {
       role = "assistant";
-      blocks = assistantContent(message);
+      blocks = assistantContent(message).map((block) =>
+        block.type === "tool_use" ? { ...block, id: toolCallIds.get(block.id) ?? block.id } : block,
+      );
     } else {
       role = "user";
       blocks = [
         {
           type: "tool_result",
-          tool_use_id: message.toolCallId,
+          tool_use_id: toolCallIds.get(message.toolCallId) ?? message.toolCallId,
           content: toolResultContent(message),
           is_error: message.isError,
         },
