@@ -188,6 +188,53 @@ test("keeps one breakpoint in a pre-marked multi-block final message", () => {
   assert.deepEqual(final.at(-1)?.cache_control, marker);
 });
 
+test("keeps four breakpoints when Pi appends a system-prompt update after the latest query", () => {
+  // Shape of a real failing second turn: Claude Code marks the latest user query, and the
+  // trailing Pi system injection then receives its own final-message marker.
+  const canonical = [{ type: "text", text: "run cat" }];
+  const marker = { type: "ephemeral", ttl: "1h" };
+  const body = {
+    system: [
+      { type: "text", text: "billing" },
+      { type: "text", text: "identity", cache_control: marker },
+      { type: "text", text: "prompt", cache_control: marker },
+    ],
+    tools: [{ name: "mcp__pi__bash", input_schema: { type: "object" }, cache_control: marker }],
+    messages: [
+      { role: "user", content: canonical },
+      { role: "system", content: "environment" },
+      { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "mcp__pi__bash", input: {} }] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "x" }] },
+      { role: "system", content: "date reminder" },
+      { role: "assistant", content: [{ type: "text", text: "OK1" }] },
+      { role: "user", content: [{ type: "text", text: "run ls", cache_control: marker }] },
+    ],
+  };
+  const rewritten = JSON.parse(
+    rewriteInitialRequest(
+      Buffer.from(JSON.stringify(body)),
+      undefined,
+      canonical,
+      [{ role: "system", content: [{ type: "text", text: "environment" }] }],
+      [{ beforeAssistant: null, content: [{ type: "text", text: 'Updated system prompt section "mcp_servers"' }] }],
+    ).toString("utf8"),
+  );
+  const count = (value: unknown): number =>
+    Array.isArray(value)
+      ? value.reduce((sum: number, child) => sum + count(child), 0)
+      : value && typeof value === "object"
+        ? Object.entries(value).reduce(
+            (sum: number, [key, child]) => sum + (key === "cache_control" ? 1 : count(child)),
+            0,
+          )
+        : 0;
+  assert.equal(count(rewritten), 4, `found ${count(rewritten)} cache_control markers`);
+  const marked = rewritten.messages
+    .map((message: { content: unknown }, index: number) => (count(message.content) ? index : -1))
+    .filter((index: number) => index >= 0);
+  assert.deepEqual(marked, [3, 7], "markers sit on the previous query boundary and the final message");
+});
+
 test("runs a request through a stream-json Claude executable", async () => {
   const root = await mkdtemp(join(tmpdir(), "pi-claude-code-test-"));
   const workingRoot = await realpath(root);

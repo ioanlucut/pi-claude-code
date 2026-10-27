@@ -552,9 +552,10 @@ function setReplayCacheBreakpoints(messages: NativeRequestMessage[]): void {
     // consume half of them, so once a prior queried user exists, move the
     // native environment marker to that exact previous query boundary. This
     // avoids relying on automatic lookback (notably unreliable with images).
-    for (const message of messages) {
-      if (message.role === "system") message.content = withoutCacheControl(message.content);
-    }
+    // Claude Code's own marker on the latest query is cleared too: a Pi
+    // system-prompt update appended after that query becomes the final
+    // message and takes its own marker, which would make five.
+    for (const message of messages) message.content = withoutCacheControl(message.content);
     setCacheBreakpoint(messages[userIndexes.at(-2)!]!);
   }
   const final = messages.at(-1);
