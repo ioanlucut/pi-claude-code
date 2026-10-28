@@ -6,6 +6,24 @@ routing all Claude model requests through the official Claude Code CLI.
 Pi still handles conversation history, approvals, compaction, and tool
 execution. Claude Code only talks to the model. It never runs tools itself.
 
+> [!NOTE]
+> **This is a fork.** The original is
+> [earendil-works/pi-claude-code](https://github.com/earendil-works/pi-claude-code)
+> by [Armin Ronacher](https://github.com/mitsuhiko) at
+> [Earendil Works](https://earendil.com/). This fork,
+> [ioanlucut/pi-claude-code](https://github.com/ioanlucut/pi-claude-code), keeps
+> fixes that upstream has not merged yet. Each one has a test:
+>
+> | Problem upstream                                                                                                                 | Here                                                                                               | Upstream                                                                                                                           |
+> | -------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+> | A switch from Codex to Claude in one conversation fails with HTTP 400: Codex tool-call IDs such as `call_…\|fc_…` contain `\|`.  | IDs that Claude rejects get stable valid replacements.                                             | [#6](https://github.com/earendil-works/pi-claude-code/pull/6), [#3](https://github.com/earendil-works/pi-claude-code/pull/3)       |
+> | A request after a tool result, or a second turn, fails with `A maximum of 4 blocks with cache_control may be provided. Found 5.` | One cache breakpoint per message, four in total.                                                   | [#10](https://github.com/earendil-works/pi-claude-code/issues/10), [#11](https://github.com/earendil-works/pi-claude-code/pull/11) |
+> | A lost connection to Anthropic ends the turn: Pi does not retry it, and the error shows only `AggregateError`.                   | The error names the network codes (`ETIMEDOUT`, …) and ends with `connection lost`, so Pi retries. | [#8](https://github.com/earendil-works/pi-claude-code/issues/8), [#4](https://github.com/earendil-works/pi-claude-code/pull/4)     |
+>
+> Install the fork with
+> `pi install https://github.com/ioanlucut/pi-claude-code`. See
+> [Fork](#fork) to take upstream changes.
+
 > [!WARNING]
 > **The future of this extension is uncertain.** Right now it works by running
 > Pi's requests through the official Claude Code CLI in non-interactive mode
@@ -92,3 +110,32 @@ Foundry override for Claude Code.
 
 For details on how the extension works internally, see
 [ARCHITECTURE.md](ARCHITECTURE.md).
+
+## Fork
+
+Take upstream changes:
+
+```sh
+git remote add upstream git@github.com:earendil-works/pi-claude-code.git  # once
+git fetch upstream && git rebase upstream/main
+npm test && npm run check
+```
+
+When upstream merges a fix, drop its commit here. When upstream has all of
+them, go back to `pi install https://github.com/earendil-works/pi-claude-code`.
+
+The license stays the upstream [MIT License](LICENSE), copyright Armin
+Ronacher.
+
+## Credits
+
+pi-claude-code is the work of [Armin Ronacher](https://github.com/mitsuhiko)
+and [Earendil Works](https://github.com/earendil-works). The design is theirs:
+Pi keeps the conversation and runs the tools, and Claude Code only talks to the
+model through a turn relay. This fork adds only the fixes above and their
+tests. The fixes follow reports and pull requests from
+[@adstastic](https://github.com/adstastic) (#6),
+[@injaneity](https://github.com/injaneity) (#3),
+[@jdbrew88](https://github.com/jdbrew88) (#10, #11),
+[@B0und](https://github.com/B0und) (#8) and
+[@series-phil](https://github.com/series-phil) (#4). Thank you all.
