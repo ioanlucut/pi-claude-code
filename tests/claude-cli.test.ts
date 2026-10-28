@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
+import * as http from "node:http";
 import { chmod, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { isRetryableAssistantError, type AssistantMessage } from "@earendil-works/pi-ai";
 import {
   cachedClaudeProcessCount,
   closeClaudeProcesses,
@@ -478,3 +480,77 @@ for await (const line of input) {
     await rm(root, { recursive: true, force: true });
   }
 });
+
+// Each upstream loses the connection: one before any status, one after a 200 and `message_start`.
+const lostConnections: Array<[string, http.RequestListener]> = [
+  ["before a status", (request) => request.socket.destroy()],
+  [
+    "mid-stream",
+    (_request, response) => {
+      response.writeHead(200, { "content-type": "text/event-stream" });
+      const message = { id: "m1", role: "assistant", content: [], usage: { input_tokens: 2, output_tokens: 0 } };
+      response.write(`event: message_start\ndata: ${JSON.stringify({ type: "message_start", message })}\n\n`);
+      setTimeout(() => response.socket?.destroy(), 20);
+    },
+  ],
+];
+
+for (const [when, listener] of lostConnections) {
+  test(`reports an upstream connection lost ${when} as retryable`, async () => {
+    const upstream = http.createServer(async (request, response) => {
+      for await (const _chunk of request);
+      listener(request, response);
+    });
+    await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+    const address = upstream.address();
+    if (!address || typeof address === "string") throw new Error("missing address");
+    const root = await realpath(await mkdtemp(join(tmpdir(), "pi-claude-code-lost-")));
+    const executable = join(root, "fake-claude.mjs");
+    // Like Claude Code: one Messages request through the relay, then a failed result.
+    await writeFile(
+      executable,
+      `#!/usr/bin/env node
+import readline from "node:readline";
+if (process.argv.includes("auth") && process.argv.includes("status")) {
+  console.log(JSON.stringify({loggedIn: true, authMethod: "claude.ai", subscriptionType: "max"}));
+  process.exit(0);
+}
+const input = readline.createInterface({input: process.stdin, crlfDelay: Infinity});
+for await (const line of input) {
+  if (JSON.parse(line).type !== "user") continue;
+  try {
+    await (await fetch(\`\${process.env.ANTHROPIC_BASE_URL}/v1/messages\`, {method: "POST", body: "{}"})).text();
+  } catch {}
+  console.log(JSON.stringify({type: "result", subtype: "error_during_execution", is_error: true}));
+}
+`,
+      "utf8",
+    );
+    await chmod(executable, 0o755);
+
+    try {
+      const error = await runClaudeRequest({
+        model: "sonnet",
+        cwd: root,
+        frames: [{ type: "user", message: { role: "user", content: [{ type: "text", text: "hi" }] } }],
+        systemPrompt: "system",
+        manifest: [],
+        extraBody: { tools: [] },
+        toolNames: new Set(),
+        env: { PI_CLAUDE_CODE_COMMAND: executable },
+        upstreamUrl: `http://127.0.0.1:${address.port}`,
+        timeoutMs: 5_000,
+      }).then(
+        () => assert.fail("expected the lost connection to fail the request"),
+        (error: Error) => error,
+      );
+      assert.match(error.message, /^Incomplete Claude Code upstream response \(.*capture incomplete/);
+      const failed = { role: "assistant", stopReason: "error", errorMessage: error.message } as AssistantMessage;
+      assert.equal(isRetryableAssistantError(failed), true, error.message);
+    } finally {
+      closeClaudeProcesses();
+      await new Promise<void>((resolve) => upstream.close(() => resolve()));
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+}

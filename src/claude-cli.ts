@@ -972,7 +972,9 @@ class ClaudeProcess {
           if (this.relay.denied) detail += `, native retries denied ${this.relay.denied}`;
           const upstreamError = this.relay.errorText();
           if (upstreamError) detail += `, upstream said: ${upstreamError.slice(0, 500)}`;
-          throw new Error(`Incomplete Claude Code upstream response (${detail})`);
+          // CLAUDE_CODE_MAX_RETRIES=0 leaves Pi's retry as the only one, and Pi matches "connection lost".
+          const lost = (this.relay.status === undefined || this.relay.status === 200) && !upstreamError;
+          throw new Error(`Incomplete Claude Code upstream response (${detail})${lost ? ": connection lost" : ""}`);
         }
         message = this.relay.capture.message;
         sawMessageStop = true;
