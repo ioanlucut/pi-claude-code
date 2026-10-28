@@ -4,6 +4,18 @@ import { randomBytes } from "node:crypto";
 import type { AddressInfo } from "node:net";
 import type { AnthropicStreamEvent, NativeContentBlock, NativeMessage } from "./native-types.ts";
 
+function failureDetail(error: unknown): string {
+  if (!(error instanceof Error)) return "UnknownError";
+  if (error instanceof AggregateError) {
+    return `AggregateError (${error.errors.map(failureDetail).join("; ")})`;
+  }
+  // Keep transport codes, not messages that can contain private request data.
+  const code = "code" in error ? error.code : undefined;
+  return typeof code === "string" && /^[A-Z][A-Z0-9_]{0,63}$/u.test(code)
+    ? `${error.name} [${code}]`
+    : error.name;
+}
+
 function copy<T>(value: T): T {
   return structuredClone(value);
 }
@@ -323,7 +335,7 @@ export class TurnRelay {
       if (this.status === 200) this.capture.finish();
       response.end();
     } catch (error) {
-      this.failure = error instanceof Error ? error.name : "UnknownError";
+      this.failure = failureDetail(error);
       if (!response.headersSent) response.writeHead(this.cancelled ? 499 : 502).end();
       else response.destroy();
     } finally {

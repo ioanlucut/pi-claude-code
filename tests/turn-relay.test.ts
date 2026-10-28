@@ -91,6 +91,29 @@ test("relays one upstream Messages request and captures its SSE response", async
   }
 });
 
+test("preserves nested connection error codes without exposing error messages", async () => {
+  const relay = new TurnRelay("https://api.anthropic.com", 5_000, undefined, () => {
+    throw new AggregateError([
+      Object.assign(new Error("private connection details"), { code: "ETIMEDOUT" }),
+      Object.assign(new Error("private connection details"), { code: "ENETUNREACH" }),
+    ]);
+  });
+
+  try {
+    const baseUrl = await relay.start();
+    const response = await fetch(`${baseUrl}/v1/messages`, { method: "POST", body: "{}" });
+    await response.text();
+    await relay.settled();
+
+    assert.equal(response.status, 502);
+    assert.equal(relay.status, undefined);
+    assert.equal(relay.capture.complete, false);
+    assert.equal(relay.failure, "AggregateError (Error [ETIMEDOUT]; Error [ENETUNREACH])");
+  } finally {
+    await relay.close();
+  }
+});
+
 test("surfaces an error event from an otherwise successful SSE stream", async () => {
   const upstream = http.createServer(async (request, response) => {
     for await (const _chunk of request);
