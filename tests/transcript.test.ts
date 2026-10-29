@@ -268,4 +268,7 @@ test("normalizes tool schemas and builds native generation fields", () => {
     thinking: { type: "disabled" },
     context_management: { edits: [] },
   });
+  // Fable and Opus 5.5 reject disabled thinking, so a call without reasoning keeps Claude Code's default.
+  assert.deepEqual(buildExtraBody("claude-fable-5-1", [], {}), { tools: [] });
+  assert.deepEqual(buildExtraBody("claude-opus-5-5", [], {}), { tools: [] });
 });

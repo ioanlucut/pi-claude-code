@@ -25,6 +25,7 @@ const BUILTIN_ANTHROPIC_MODELS: Record<string, Model<"anthropic-messages">> = Ob
 const NATIVE_ROUTE_BY_ID = new Map<string, string>();
 const NATIVE_TOOL_CHANGES_BY_ID = new Map<string, boolean>();
 const ADAPTIVE_THINKING_BY_ID = new Map<string, boolean>();
+const THINKING_OFF_BY_ID = new Map<string, boolean>();
 
 const FALLBACK_DISCOVERY: DiscoveredClaudeModel[] = [
   {
@@ -140,6 +141,7 @@ export function modelFromDiscovery(info: DiscoveredClaudeModel): ClaudeCodeModel
   NATIVE_ROUTE_BY_ID.set(id, info.value);
   NATIVE_TOOL_CHANGES_BY_ID.set(id, builtin?.compat?.supportsMidConvoToolChanges === true);
   ADAPTIVE_THINKING_BY_ID.set(id, info.supportsAdaptiveThinking === true);
+  THINKING_OFF_BY_ID.set(id, builtin?.thinkingLevelMap?.off !== null);
   return builtin ? fromBuiltin(info, id, builtin) : fallbackModel(info, id);
 }
 
@@ -162,6 +164,16 @@ function canonicalRoute(model: string): string {
 export function supportsAdaptiveThinking(model: string): boolean {
   const canonical = canonicalRoute(model);
   return ADAPTIVE_THINKING_BY_ID.get(model) ?? ADAPTIVE_THINKING_BY_ID.get(canonical) ?? true;
+}
+
+/** Whether Anthropic accepts disabled thinking for this route; Pi marks models that reject it with `off: null`. */
+export function supportsThinkingOff(model: string): boolean {
+  const canonical = canonicalRoute(model);
+  return (
+    THINKING_OFF_BY_ID.get(model) ??
+    THINKING_OFF_BY_ID.get(canonical) ??
+    BUILTIN_ANTHROPIC_MODELS[canonical]?.thinkingLevelMap?.off !== null
+  );
 }
 
 /** Whether Anthropic currently accepts native mid-conversation tool blocks for this route. */

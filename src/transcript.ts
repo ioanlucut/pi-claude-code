@@ -13,7 +13,7 @@ import {
   type Tool,
   type ToolResultMessage,
 } from "@earendil-works/pi-ai";
-import { supportsAdaptiveThinking } from "./model-catalog.ts";
+import { supportsAdaptiveThinking, supportsThinkingOff } from "./model-catalog.ts";
 import type { NativeContentBlock, NativeFrame, NativeMessage } from "./native-types.ts";
 
 export const TOOL_PREFIX = "mcp__pi__";
@@ -398,7 +398,7 @@ export function buildExtraBody(
     body.output_config = {
       effort: options.reasoning === "minimal" ? "low" : options.reasoning,
     };
-  } else {
+  } else if (supportsThinkingOff(modelId)) {
     body.thinking = { type: "disabled" };
     // Native clear-thinking edits are invalid when thinking is disabled.
     body.context_management = { edits: [] };
