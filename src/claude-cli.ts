@@ -646,7 +646,7 @@ export function rewriteInitialRequest(
   };
   let messages = payload.messages;
   const first = messages?.[0];
-  if (first?.role !== "user" || !Array.isArray(first.content)) {
+  if (first?.role !== "user" || (typeof first.content !== "string" && !Array.isArray(first.content))) {
     throw new Error("Claude Code request is missing its initial user message");
   }
   if (prefix) first.content = [...structuredClone(prefix), ...structuredClone(canonicalContent)];

@@ -87,6 +87,21 @@ test("stabilizes Claude Code's native replay reminders and cache breakpoint", ()
   );
 });
 
+test("rewrites a first user message with string content", () => {
+  // Claude Code sends string content for some requests, e.g. after a large image read.
+  const body = {
+    messages: [
+      { role: "user", content: "big.png what is this?" },
+      { role: "system", content: [{ type: "text", text: "environment" }] },
+    ],
+  };
+  const rewritten = JSON.parse(
+    rewriteInitialRequest(Buffer.from(JSON.stringify(body)), undefined, [], undefined, []).toString("utf8"),
+  ) as { messages: Array<{ role: string; content: unknown }> };
+
+  assert.deepEqual(rewritten.messages[0], body.messages[0]);
+});
+
 test("injects native system history at assistant boundaries", () => {
   const body = {
     system: [
