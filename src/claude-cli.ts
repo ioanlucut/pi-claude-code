@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline";
 import { spawn, type ChildProcess } from "node:child_process";
 import { registerSessionResourceCleanup } from "@earendil-works/pi-ai";
-import { TurnRelay } from "./turn-relay.ts";
+import { RelayRequestError, TurnRelay } from "./turn-relay.ts";
 import { usageCreditsAllowed, usageCreditsChargeError, type RateLimitInfo } from "./billing.ts";
 import { envFlagEnabled } from "./env.ts";
 import type { DiscoveredClaudeModel } from "./model-catalog.ts";
@@ -617,7 +617,7 @@ function injectNativeSystemMessages(
     }
     output.push(message);
   }
-  if (byAssistant.size > 0) throw new Error("Claude Code request lost an assistant boundary needed by system history");
+  if (byAssistant.size > 0) throw new RelayRequestError("Claude Code request lost an assistant boundary needed by system history");
   output.push(...trailing);
   return output;
 }
@@ -647,7 +647,7 @@ export function rewriteInitialRequest(
   let messages = payload.messages;
   const first = messages?.[0];
   if (first?.role !== "user" || (typeof first.content !== "string" && !Array.isArray(first.content))) {
-    throw new Error("Claude Code request is missing its initial user message");
+    throw new RelayRequestError("Claude Code request is missing its initial user message");
   }
   if (prefix) first.content = [...structuredClone(prefix), ...structuredClone(canonicalContent)];
 
@@ -973,7 +973,8 @@ class ClaudeProcess {
           const upstreamError = this.relay.errorText();
           if (upstreamError) detail += `, upstream said: ${upstreamError.slice(0, 500)}`;
           // CLAUDE_CODE_MAX_RETRIES=0 leaves Pi's retry as the only one, and Pi matches "connection lost".
-          const lost = (this.relay.status === undefined || this.relay.status === 200) && !upstreamError;
+          const lost =
+            (this.relay.status === undefined || this.relay.status === 200) && !upstreamError && !this.relay.rewriteFailed;
           throw new Error(`Incomplete Claude Code upstream response (${detail})${lost ? ": connection lost" : ""}`);
         }
         message = this.relay.capture.message;

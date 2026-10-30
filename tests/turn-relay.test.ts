@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import * as http from "node:http";
 import test from "node:test";
-import { TurnRelay } from "../src/turn-relay.ts";
+import { RelayRequestError, TurnRelay } from "../src/turn-relay.ts";
 
 function listen(server: http.Server): Promise<number> {
   return new Promise((resolve) => {
@@ -109,6 +109,25 @@ test("preserves nested connection error codes without exposing error messages", 
     assert.equal(relay.status, undefined);
     assert.equal(relay.capture.complete, false);
     assert.equal(relay.failure, "AggregateError (Error [ETIMEDOUT]; Error [ENETUNREACH])");
+  } finally {
+    await relay.close();
+  }
+});
+
+test("keeps the reason of a request rewrite failure", async () => {
+  const relay = new TurnRelay("https://api.anthropic.com", 5_000, undefined, () => {
+    throw new RelayRequestError("rewrite reason");
+  });
+
+  try {
+    const baseUrl = await relay.start();
+    const response = await fetch(`${baseUrl}/v1/messages`, { method: "POST", body: "{}" });
+    await response.text();
+    await relay.settled();
+
+    assert.equal(response.status, 502);
+    assert.equal(relay.failure, "RelayRequestError: rewrite reason");
+    assert.equal(relay.rewriteFailed, true);
   } finally {
     await relay.close();
   }
