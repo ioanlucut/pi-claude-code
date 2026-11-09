@@ -34,8 +34,11 @@ export class AnthropicCapture {
   private pending = "";
   private readonly decoder = new TextDecoder();
   private readonly argumentsByIndex = new Map<number, string>();
+  private readonly onEvent?: (event: AnthropicStreamEvent) => void;
 
-  constructor(private readonly onEvent?: (event: AnthropicStreamEvent) => void) {}
+  constructor(onEvent?: (event: AnthropicStreamEvent) => void) {
+    this.onEvent = onEvent;
+  }
 
   feed(chunk: Uint8Array): void {
     this.pending += this.decoder.decode(chunk, { stream: true });
@@ -152,14 +155,16 @@ export class TurnRelay {
   private baseUrl?: string;
   private transformRequest?: (body: Buffer) => Buffer;
   private requestBetas: string[] = [];
+  private readonly timeoutMs: number;
 
   constructor(
     upstream = "https://api.anthropic.com",
-    private readonly timeoutMs = 180_000,
+    timeoutMs = 180_000,
     onEvent?: (event: AnthropicStreamEvent) => void,
     transformRequest?: (body: Buffer) => Buffer,
     requestBetas: string[] = [],
   ) {
+    this.timeoutMs = timeoutMs;
     this.upstream = new URL(upstream);
     const loopback = ["127.0.0.1", "::1", "localhost"].includes(this.upstream.hostname);
     if (

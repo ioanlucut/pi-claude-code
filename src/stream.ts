@@ -153,13 +153,22 @@ function nativeContent(content: NativeContentBlock[], toolNames: Set<string>): A
 class EventTranslator {
   private readonly nativeToContent = new Map<number, number>();
   private sawContentEvent = false;
+  private readonly model: Model<any>;
+  private readonly output: AssistantMessage;
+  private readonly stream: AssistantMessageEventStream;
+  private readonly toolNames: Set<string>;
 
   constructor(
-    private readonly model: Model<any>,
-    private readonly output: AssistantMessage,
-    private readonly stream: AssistantMessageEventStream,
-    private readonly toolNames: Set<string>,
-  ) {}
+    model: Model<any>,
+    output: AssistantMessage,
+    stream: AssistantMessageEventStream,
+    toolNames: Set<string>,
+  ) {
+    this.model = model;
+    this.output = output;
+    this.stream = stream;
+    this.toolNames = toolNames;
+  }
 
   event(event: AnthropicStreamEvent): void {
     switch (event.type) {
