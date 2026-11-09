@@ -239,6 +239,37 @@ test("builds cache-stable native tool declarations and chronological system chan
   );
 });
 
+test("skips tools whose names Claude Code rejects instead of failing every turn", () => {
+  const tool = (name: string) =>
+    ({ name, description: name, parameters: { type: "object", properties: {} } }) as unknown as Tool;
+  // 51 characters: an MCP tool that tool_search can load into any session.
+  const long = tool("mcp__agent_browser__agent_browser_wait_for_selector");
+  const prepared = prepareTools([tool("read"), long, tool("bad name")]);
+  assert.deepEqual([...prepared.names], ["read"]);
+  assert.deepEqual(
+    prepared.nativeTools.map((native) => native.name),
+    [`${TOOL_PREFIX}read`],
+  );
+
+  const plan = prepareNativeTranscript(
+    [
+      { role: "system", content: "base", toolsAdded: [tool("read"), long], timestamp: 0 },
+      { role: "user", content: "find tools", timestamp: 1 },
+      { role: "system", content: "loaded", toolsAdded: [tool("write"), long], timestamp: 2 },
+      { role: "user", content: "go", timestamp: 3 },
+    ],
+    true,
+  )!;
+  assert.deepEqual(
+    plan.requestTools.map((native) => native.name),
+    [`${TOOL_PREFIX}read`, "__pi_deferred_placeholder__", `${TOOL_PREFIX}write`],
+  );
+  assert.deepEqual(plan.systemInjections[0]?.content, [
+    { type: "text", text: "loaded" },
+    { type: "tool_addition", tool: { type: "tool_reference", name: `${TOOL_PREFIX}write` } },
+  ]);
+});
+
 test("normalizes tool schemas and builds native generation fields", () => {
   const tools = [
     {

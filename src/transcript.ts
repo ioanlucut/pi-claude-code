@@ -301,9 +301,8 @@ export function prepareTools(tools: Tool[]): {
   const nativeTools: Array<Record<string, unknown>> = [];
 
   for (const tool of tools) {
-    if (!/^[A-Za-z0-9_-]{1,50}$/u.test(tool.name) || names.has(tool.name)) {
-      throw new Error("Claude Code tool names must be unique ASCII identifiers of at most 50 characters");
-    }
+    // Claude Code rejects the whole request for one bad name, so drop that tool and keep the session usable.
+    if (!/^[A-Za-z0-9_-]{1,50}$/u.test(tool.name) || names.has(tool.name)) continue;
     names.add(tool.name);
     const schema = normalizeInputSchema(tool.parameters);
     manifest.push({ name: tool.name, description: tool.description, inputSchema: schema });
@@ -316,17 +315,17 @@ export function prepareTools(tools: Tool[]): {
   return { manifest, nativeTools, names };
 }
 
-function nativeSystemBlocks(message: SystemMessage): Array<Record<string, unknown>> {
+function nativeSystemBlocks(message: SystemMessage, names: Set<string>): Array<Record<string, unknown>> {
   const blocks: Array<Record<string, unknown>> = [];
   const text = renderSystemMessageUpdate(message);
   if (text) blocks.push({ type: "text", text: sanitizeSurrogates(text) });
-  for (const tool of message.toolsRemoved ?? []) {
+  for (const tool of (message.toolsRemoved ?? []).filter((tool) => names.has(tool.name))) {
     blocks.push({
       type: "tool_removal",
       tool: { type: "tool_reference", name: `${TOOL_PREFIX}${tool.name}` },
     });
   }
-  for (const tool of message.toolsAdded ?? []) {
+  for (const tool of (message.toolsAdded ?? []).filter((tool) => names.has(tool.name))) {
     blocks.push({
       type: "tool_addition",
       tool: { type: "tool_reference", name: `${TOOL_PREFIX}${tool.name}` },
@@ -344,11 +343,11 @@ export function prepareNativeTranscript(
   supported: boolean,
 ): NativeTranscriptPlan | undefined {
   const initial = getInitialSystemMessage(messages);
-  const initialTools = initial?.toolsAdded ?? [];
+  const prepared = prepareTools(getDeclaredTools(messages));
+  const declared = getDeclaredTools(messages).filter((tool) => prepared.names.has(tool.name));
+  const initialTools = (initial?.toolsAdded ?? []).filter((tool) => prepared.names.has(tool.name));
   if (!supported || initialTools.length === 0 || hasToolRedefinitions(messages)) return undefined;
 
-  const declared = getDeclaredTools(messages);
-  const prepared = prepareTools(declared);
   const nativeByName = new Map(
     prepared.nativeTools.map((tool) => [String(tool.name).slice(TOOL_PREFIX.length), tool]),
   );
@@ -370,7 +369,7 @@ export function prepareNativeTranscript(
   for (let index = 1; index < messages.length; index++) {
     const message = messages[index]!;
     if (message.role === "system") {
-      const blocks = nativeSystemBlocks(message);
+      const blocks = nativeSystemBlocks(message, prepared.names);
       if (blocks.length) pending.push(blocks);
     } else if (message.role === "assistant" && assistantContent(message).length > 0) {
       flush(assistantOrdinal);
