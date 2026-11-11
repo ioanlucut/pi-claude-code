@@ -4,24 +4,6 @@ import { randomBytes } from "node:crypto";
 import type { AddressInfo } from "node:net";
 import type { AnthropicStreamEvent, NativeContentBlock, NativeMessage } from "./native-types.ts";
 
-/** A fault in Pi's own request rewrite. Its message is fixed text, and a retry repeats it. */
-export class RelayRequestError extends Error {
-  override name = "RelayRequestError";
-}
-
-function failureDetail(error: unknown): string {
-  if (!(error instanceof Error)) return "UnknownError";
-  if (error instanceof RelayRequestError) return `${error.name}: ${error.message}`;
-  if (error instanceof AggregateError) {
-    return `AggregateError (${error.errors.map(failureDetail).join("; ")})`;
-  }
-  // Keep transport codes, not messages that can contain private request data.
-  const code = "code" in error ? error.code : undefined;
-  return typeof code === "string" && /^[A-Z][A-Z0-9_]{0,63}$/u.test(code)
-    ? `${error.name} [${code}]`
-    : error.name;
-}
-
 function copy<T>(value: T): T {
   return structuredClone(value);
 }
@@ -132,6 +114,22 @@ const STRIPPED_REQUEST_HEADERS = new Set([
 
 const STRIPPED_RESPONSE_HEADERS = new Set(["connection", "transfer-encoding", "server", "date"]);
 
+/**
+ * Describe a relay failure without losing what Node puts outside `message`:
+ * connection errors carry their reason in `code`, and a connection attempt to
+ * every address of a host fails with an `AggregateError` that has no message.
+ */
+export function describeFailure(error: unknown): string {
+  if (!(error instanceof Error)) return "UnknownError";
+  let text = error.message ? `${error.name}: ${error.message}` : error.name;
+  const code = (error as { code?: unknown }).code;
+  if (typeof code === "string" && !text.includes(code)) text += ` (${code})`;
+  if (error instanceof AggregateError && error.errors.length > 0) {
+    text += ` [${error.errors.map(describeFailure).join("; ")}]`;
+  }
+  return text;
+}
+
 export class TurnRelay {
   capture: AnthropicCapture;
   used = false;
@@ -139,8 +137,8 @@ export class TurnRelay {
   status?: number;
   requestId?: string;
   failure?: string;
-  /** The failure came from Pi's request rewrite, not the network. */
-  rewriteFailed = false;
+  /** The upstream request failed before Anthropic sent a response status. */
+  upstreamFailed = false;
   errorBody = Buffer.alloc(0);
   originalRequestBody?: Buffer;
   requestBody?: Buffer;
@@ -199,7 +197,7 @@ export class TurnRelay {
     this.status = undefined;
     this.requestId = undefined;
     this.failure = undefined;
-    this.rewriteFailed = false;
+    this.upstreamFailed = false;
     this.errorBody = Buffer.alloc(0);
     this.originalRequestBody = undefined;
     this.requestBody = undefined;
@@ -349,8 +347,8 @@ export class TurnRelay {
       if (this.status === 200) this.capture.finish();
       response.end();
     } catch (error) {
-      this.failure = failureDetail(error);
-      this.rewriteFailed = error instanceof RelayRequestError;
+      this.failure = describeFailure(error);
+      this.upstreamFailed = upstreamRequest !== undefined && this.status === undefined && !this.cancelled;
       if (!response.headersSent) response.writeHead(this.cancelled ? 499 : 502).end();
       else response.destroy();
     } finally {

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import * as http from "node:http";
 import test from "node:test";
-import { RelayRequestError, TurnRelay } from "../src/turn-relay.ts";
+import { describeFailure, TurnRelay } from "../src/turn-relay.ts";
 
 function listen(server: http.Server): Promise<number> {
   return new Promise((resolve) => {
@@ -91,48 +91,6 @@ test("relays one upstream Messages request and captures its SSE response", async
   }
 });
 
-test("preserves nested connection error codes without exposing error messages", async () => {
-  const relay = new TurnRelay("https://api.anthropic.com", 5_000, undefined, () => {
-    throw new AggregateError([
-      Object.assign(new Error("private connection details"), { code: "ETIMEDOUT" }),
-      Object.assign(new Error("private connection details"), { code: "ENETUNREACH" }),
-    ]);
-  });
-
-  try {
-    const baseUrl = await relay.start();
-    const response = await fetch(`${baseUrl}/v1/messages`, { method: "POST", body: "{}" });
-    await response.text();
-    await relay.settled();
-
-    assert.equal(response.status, 502);
-    assert.equal(relay.status, undefined);
-    assert.equal(relay.capture.complete, false);
-    assert.equal(relay.failure, "AggregateError (Error [ETIMEDOUT]; Error [ENETUNREACH])");
-  } finally {
-    await relay.close();
-  }
-});
-
-test("keeps the reason of a request rewrite failure", async () => {
-  const relay = new TurnRelay("https://api.anthropic.com", 5_000, undefined, () => {
-    throw new RelayRequestError("rewrite reason");
-  });
-
-  try {
-    const baseUrl = await relay.start();
-    const response = await fetch(`${baseUrl}/v1/messages`, { method: "POST", body: "{}" });
-    await response.text();
-    await relay.settled();
-
-    assert.equal(response.status, 502);
-    assert.equal(relay.failure, "RelayRequestError: rewrite reason");
-    assert.equal(relay.rewriteFailed, true);
-  } finally {
-    await relay.close();
-  }
-});
-
 test("surfaces an error event from an otherwise successful SSE stream", async () => {
   const upstream = http.createServer(async (request, response) => {
     for await (const _chunk of request);
@@ -161,4 +119,17 @@ test("surfaces an error event from an otherwise successful SSE stream", async ()
     await relay.close();
     await new Promise<void>((resolve) => upstream.close(() => resolve()));
   }
+});
+
+test("describes relay failures with their error code and nested errors", () => {
+  const refused = Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:1"), { code: "ECONNREFUSED" });
+  assert.equal(describeFailure(refused), "Error: connect ECONNREFUSED 127.0.0.1:1");
+  const timeout = Object.assign(new Error("connect ETIMEDOUT 10.0.0.1:443"), { code: "ETIMEDOUT" });
+  const every = Object.assign(new AggregateError([refused, timeout]), { code: "ETIMEDOUT" });
+  assert.equal(
+    describeFailure(every),
+    "AggregateError (ETIMEDOUT) [Error: connect ECONNREFUSED 127.0.0.1:1; Error: connect ETIMEDOUT 10.0.0.1:443]",
+  );
+  assert.equal(describeFailure(Object.assign(new Error(""), { code: "ECONNRESET" })), "Error (ECONNRESET)");
+  assert.equal(describeFailure("nope"), "UnknownError");
 });
