@@ -385,3 +385,44 @@ test("normalizes foreign tool call ids and drops foreign reasoning before replay
   assert.equal((frames[2]?.message.content[0] as { tool_use_id: string }).tool_use_id, toolUse[1]!.id);
   assert.deepEqual(messages, original);
 });
+
+test("answers tool calls that have no result, so a side question during a tool call is valid", () => {
+  const assistant: AssistantMessage = {
+    role: "assistant",
+    api: "test",
+    provider: "claude-code",
+    model: "sonnet",
+    content: [
+      { type: "toolCall", id: "t1", name: "bash", arguments: { command: "sleep 40" } },
+      { type: "toolCall", id: "t2", name: "read", arguments: { path: "a" } },
+    ],
+    usage,
+    stopReason: "toolUse",
+    timestamp: 1,
+  };
+  const t2Result: Message = {
+    role: "toolResult",
+    toolCallId: "t2",
+    toolName: "read",
+    content: [{ type: "text", text: "A" }],
+    isError: false,
+    timestamp: 2,
+  };
+  const orphan = { type: "tool_result", tool_use_id: "t1", content: "No result provided", is_error: true };
+
+  const midTurn = prepareFrames([
+    { role: "user", content: "run it", timestamp: 0 },
+    assistant,
+    t2Result,
+    { role: "user", content: "side question", timestamp: 3 },
+  ]);
+  assert.equal(midTurn.length, 3);
+  assert.deepEqual(midTurn[2]?.message.content, [
+    { type: "tool_result", tool_use_id: "t2", content: "A", is_error: false },
+    orphan,
+    { type: "text", text: "side question" },
+  ]);
+
+  const atTail = prepareFrames([{ role: "user", content: "run it", timestamp: 0 }, assistant, t2Result]);
+  assert.deepEqual(atTail[2]?.message.content.at(-1), orphan);
+});
