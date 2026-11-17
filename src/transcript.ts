@@ -228,6 +228,32 @@ function assistantContent(message: AssistantMessage): NativeContentBlock[] {
 export function prepareFrames(messages: Message[]): NativeFrame[] {
   const frames: NativeFrame[] = [];
   const toolCallIds = prepareToolCallIds(messages);
+  // tool_use ids of the last assistant frame that have no tool_result yet.
+  let pendingToolUseIds: string[] = [];
+
+  const push = (role: "user" | "assistant", blocks: unknown[]) => {
+    const previous = frames.at(-1);
+    if (role === "user" && previous?.type === "user") {
+      previous.message.content.push(...blocks);
+    } else {
+      frames.push({ type: role, message: { role, content: blocks } });
+    }
+  };
+  // Like pi-ai's transformMessages: Anthropic rejects a tool_use without a
+  // tool_result, e.g. a side request sent while a tool call still runs.
+  const closePendingToolUses = () => {
+    if (pendingToolUseIds.length === 0) return;
+    push(
+      "user",
+      pendingToolUseIds.map((id) => ({
+        type: "tool_result",
+        tool_use_id: id,
+        content: "No result provided",
+        is_error: true,
+      })),
+    );
+    pendingToolUseIds = [];
+  };
 
   for (const message of messages) {
     if (message.role === "system") continue;
@@ -236,19 +262,25 @@ export function prepareFrames(messages: Message[]): NativeFrame[] {
     let blocks: unknown[];
 
     if (message.role === "user") {
+      closePendingToolUses();
       role = "user";
       blocks = userContent(message.content);
     } else if (message.role === "assistant") {
+      closePendingToolUses();
       role = "assistant";
-      blocks = assistantContent(message).map((block) =>
+      const assistantBlocks = assistantContent(message).map((block) =>
         block.type === "tool_use" ? { ...block, id: toolCallIds.get(block.id) ?? block.id } : block,
       );
+      pendingToolUseIds = assistantBlocks.flatMap((block) => (block.type === "tool_use" ? [block.id] : []));
+      blocks = assistantBlocks;
     } else {
       role = "user";
+      const toolUseId = toolCallIds.get(message.toolCallId) ?? message.toolCallId;
+      pendingToolUseIds = pendingToolUseIds.filter((id) => id !== toolUseId);
       blocks = [
         {
           type: "tool_result",
-          tool_use_id: toolCallIds.get(message.toolCallId) ?? message.toolCallId,
+          tool_use_id: toolUseId,
           content: toolResultContent(message),
           is_error: message.isError,
         },
@@ -256,13 +288,9 @@ export function prepareFrames(messages: Message[]): NativeFrame[] {
     }
 
     if (blocks.length === 0) continue;
-    const previous = frames.at(-1);
-    if (role === "user" && previous?.type === "user") {
-      previous.message.content.push(...blocks);
-    } else {
-      frames.push({ type: role, message: { role, content: blocks } });
-    }
+    push(role, blocks);
   }
+  closePendingToolUses();
 
   const final = frames.at(-1);
   if (!final || final.type !== "user" || final.message.content.length === 0) {
