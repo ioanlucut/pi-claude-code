@@ -820,6 +820,101 @@ test("reports upstream 5xx as retryable and keeps 4xx non-retryable", async () =
   assert.equal(invalid.retryable, false);
 });
 
+/** Run one turn against an upstream that answers 401 to its first `failures` requests. */
+async function staleTokenTurn(failures: number): Promise<{ result: unknown; upstreamRequests: number }> {
+  let upstreamRequests = 0;
+  const server = http.createServer(async (request, response) => {
+    for await (const _chunk of request);
+    upstreamRequests += 1;
+    if (upstreamRequests <= failures) {
+      const error = { type: "error", error: { type: "authentication_error", message: "OAuth access token has been revoked." } };
+      response.writeHead(401, { "content-type": "application/json" }).end(JSON.stringify(error));
+      return;
+    }
+    const usage = { input_tokens: 2, output_tokens: 1 };
+    const events = [
+      { type: "message_start", message: { id: "m1", role: "assistant", content: [], usage } },
+      { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
+      { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "ok" } },
+      { type: "content_block_stop", index: 0 },
+      { type: "message_delta", delta: { stop_reason: "end_turn" }, usage },
+      { type: "message_stop" },
+    ];
+    response.writeHead(200, { "content-type": "text/event-stream" });
+    response.end(events.map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(""));
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as { port: number }).port;
+
+  const root = await realpath(await mkdtemp(join(tmpdir(), "pi-claude-code-401-")));
+  const executable = join(root, "fake-claude.mjs");
+  // Like Claude Code: after a 401 it asks once more, which the relay denies.
+  await writeFile(
+    executable,
+    `#!/usr/bin/env node
+import readline from "node:readline";
+if (process.argv.includes("auth") && process.argv.includes("status")) {
+  console.log(JSON.stringify({loggedIn: true, authMethod: "claude.ai", subscriptionType: "max"}));
+  process.exit(0);
+}
+const input = readline.createInterface({input: process.stdin, crlfDelay: Infinity});
+for await (const line of input) {
+  const frame = JSON.parse(line);
+  if (frame.type !== "user") continue;
+  const ids = {user_message_uuids: [frame.uuid]};
+  const usage = {input_tokens: 2, output_tokens: 1};
+  const post = () => fetch(\`\${process.env.ANTHROPIC_BASE_URL}/v1/messages\`, {method: "POST", body: JSON.stringify({messages: [frame.message]})});
+  let response = await post();
+  await response.text();
+  if (response.status === 401) {
+    response = await post();
+    await response.text();
+    console.log(JSON.stringify({type: "result", subtype: "error_during_execution", is_error: true, ...ids}));
+    continue;
+  }
+  console.log(JSON.stringify({type: "assistant", message: {id: "m1", role: "assistant", content: [{type: "text", text: "ok"}], stop_reason: "end_turn", usage}}));
+  console.log(JSON.stringify({type: "result", subtype: "success", is_error: false, usage, ...ids}));
+}
+`,
+    "utf8",
+  );
+  await chmod(executable, 0o755);
+  try {
+    const result = await runClaudeRequest({
+      model: "sonnet",
+      cwd: root,
+      frames: [userFrame("hi")],
+      systemPrompt: "system",
+      manifest: [],
+      extraBody: { tools: [] },
+      env: { PI_CLAUDE_CODE_COMMAND: executable },
+      upstreamUrl: `http://127.0.0.1:${port}`,
+      timeoutMs: 5_000,
+    }).then(
+      (output) => output.message.content,
+      (error: Error) => error,
+    );
+    return { result, upstreamRequests };
+  } finally {
+    closeClaudeProcesses();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await rm(root, { recursive: true, force: true });
+  }
+}
+
+test("replays a turn once on a fresh process after a 401 from a token another process refreshed", async () => {
+  const { result, upstreamRequests } = await staleTokenTurn(1);
+  assert.deepEqual(result, [{ type: "text", text: "ok" }]);
+  assert.equal(upstreamRequests, 2);
+});
+
+test("stops after a second 401, so a revoked login still fails fast", async () => {
+  const { result, upstreamRequests } = await staleTokenTurn(2);
+  assert.ok(result instanceof Error);
+  assert.match(result.message, /status 401.*OAuth access token has been revoked/);
+  assert.equal(upstreamRequests, 2);
+});
+
 test("keeps user text that starts with a slash away from Claude Code's command parser", async () => {
   const root = await realpath(await mkdtemp(join(tmpdir(), "pi-claude-code-slash-")));
   const executable = join(root, "fake-claude.mjs");

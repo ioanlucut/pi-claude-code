@@ -1145,6 +1145,11 @@ class ClaudeProcess {
     return this.delivered || this.relay.used;
   }
 
+  /** True when Anthropic rejected the turn's credentials before any output. */
+  get rejectedAuth(): boolean {
+    return this.relay.status === 401 && !this.delivered;
+  }
+
   async run(input: RunClaudeInput, continuation: boolean): Promise<RunClaudeOutput> {
     if (!this.isAlive()) throw new Error("Claude Code process is no longer available");
     input.signal?.throwIfAborted();
@@ -1424,7 +1429,7 @@ registerSessionResourceCleanup((sessionId) => {
   void closeClaudeProcesses(sessionId);
 });
 
-export async function runClaudeRequest(input: RunClaudeInput): Promise<RunClaudeOutput> {
+export async function runClaudeRequest(input: RunClaudeInput, authRetried = false): Promise<RunClaudeOutput> {
   input.signal?.throwIfAborted();
   const plan = launchPlan(input);
   const acquired = await acquireProcess(input, plan);
@@ -1450,7 +1455,13 @@ export async function runClaudeRequest(input: RunClaudeInput): Promise<RunClaude
     // A warm process can hold stale hidden state. If it failed before streaming
     // or reaching the API, nothing was shown or charged, so replay once on a fresh process.
     if (acquired.continuation && !acquired.worker.startedOutput && !input.signal?.aborted) {
-      return runClaudeRequest(input);
+      return runClaudeRequest(input, authRetried);
+    }
+    // Another Claude Code process may have refreshed the shared OAuth token, so this
+    // one sent a stale copy. The relay denies Claude Code's own 401 recovery, so a
+    // fresh process, which reads the current token, replays the turn once.
+    if (acquired.worker.rejectedAuth && !authRetried && !input.signal?.aborted) {
+      return runClaudeRequest(input, true);
     }
     throw error;
   }
